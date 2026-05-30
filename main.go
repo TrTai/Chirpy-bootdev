@@ -1,30 +1,43 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	//"log"
+	"database/sql"
+	//"encoding/json"
+	//"fmt"
+	"os"
+
+	"log"
 	"net/http"
+
 	//"sync/atomic"
-	"slices"
-	"strings"
+	//"slices"
+	//"strings"
+
+	"github.com/TrTai/Chirpy-bootdev/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 func main() {
 
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	platform := os.Getenv("PLATFORM")
+
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Printf("Error opening db: %s", err)
+	}
+
+	dbQueries := database.New(db)
+
 	apiCfg := new(apiConfig)
+	apiCfg.dbQueries = dbQueries
+	apiCfg.platform = platform
 
 	mux := http.NewServeMux()
-	rootFS := http.FileServer(http.Dir("."))
-	rootPrefix := http.StripPrefix("/app/", rootFS)
-	assetsFS := http.FileServer(http.Dir("./assets"))
-	assetsPrefix := http.StripPrefix("/assets/", assetsFS)
-	mux.Handle("/app/", apiCfg.middlewareMetricsInc(rootPrefix))
-	mux.Handle("/assets/", assetsPrefix)
-	mux.HandleFunc("GET /api/healthz", healthHandler)
-	mux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
-	mux.HandleFunc("POST /admin/reset", apiCfg.metricsResetHandler)
-	mux.HandleFunc("POST /api/validate_chirp", chirpValidateHandler)
+
+	AssignMuxHandles(mux, apiCfg)
 	server := http.Server{
 		Addr:    ":8080",
 		Handler: mux,
@@ -39,45 +52,16 @@ func healthHandler(rw http.ResponseWriter, req *http.Request) {
 	rw.Write(okBody)
 }
 
-func chirpValidateHandler(rw http.ResponseWriter, req *http.Request) {
-	type parameters struct {
-		Body string `json:"body"`
-	}
-
-	type ValidText struct {
-		ValidBody   bool   `json:"valid"`
-		CleanedBody string `json:"cleaned_body"`
-	}
-	decoder := json.NewDecoder(req.Body)
-	params := parameters{}
-	err := decoder.Decode(&params)
-	if err != nil {
-		errmsg := fmt.Sprintf("Error decoding parameters: %s", err)
-		respondWithError(rw, 500, errmsg)
-		return
-	}
-
-	if len(params.Body) > 140 {
-		errMsg := fmt.Sprintf("Chirp is too long")
-		respondWithError(rw, 400, errMsg)
-	} else if len(params.Body) <= 140 {
-		respBody := ValidText{
-			ValidBody:   true,
-			CleanedBody: censorChirp(params.Body),
-		}
-		respondWithJSON(rw, 200, respBody)
-	}
-
-}
-
-func censorChirp(post string) string {
-	slicePost := strings.Split(post, " ")
-	badWords := []string{"kerfuffle", "sharbert", "fornax"}
-	for i, word := range slicePost {
-		if slices.Contains(badWords, strings.ToLower(word)) {
-			slicePost[i] = "****"
-		}
-	}
-	return strings.Join(slicePost, " ")
-
+func AssignMuxHandles(mux *http.ServeMux, apiCfg *apiConfig) {
+	mux.HandleFunc("POST /api/chirps", apiCfg.NewChirpPost)
+	assetsFS := http.FileServer(http.Dir("./assets"))
+	assetsPrefix := http.StripPrefix("/assets/", assetsFS)
+	rootFS := http.FileServer(http.Dir("."))
+	rootPrefix := http.StripPrefix("/app/", rootFS)
+	mux.Handle("/assets/", assetsPrefix)
+	mux.Handle("/app/", apiCfg.middlewareMetricsInc(rootPrefix))
+	mux.HandleFunc("GET /api/healthz", healthHandler)
+	mux.HandleFunc("GET /admin/metrics", apiCfg.metricsHandler)
+	mux.HandleFunc("POST /admin/reset", apiCfg.metricsResetHandler)
+	mux.HandleFunc("POST /api/users", apiCfg.createUser)
 }
